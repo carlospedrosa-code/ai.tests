@@ -1,0 +1,664 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Coletas do data lake: da origem ao consumidor</title>
+<style>
+:root {
+  --bg: #ffffff;
+  --panel: #f6f7f9;
+  --text: #1c2128;
+  --text2: #4b5563;
+  --text3: #6b7280;
+  --line: #d8dce3;
+  --accent: #2563eb;
+  --warn-bg: #fff7e6;
+  --warn-line: #f0c36d;
+  --node: #94a3b8;
+  --node-fill: #ffffff;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #17191e;
+    --panel: #1e2128;
+    --text: #e6e8ec;
+    --text2: #aab0bb;
+    --text3: #858c98;
+    --line: #2e333d;
+    --accent: #60a5fa;
+    --warn-bg: #2b2415;
+    --warn-line: #6b5420;
+    --node: #64748b;
+    --node-fill: #17191e;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+main { max-width: 1280px; margin: 0 auto; padding: 24px; }
+h1 { font-size: 24px; margin: 0 0 6px; }
+h2 { font-size: 18px; margin: 0; }
+h3 { font-size: 16px; margin: 0 0 8px; }
+.muted { color: var(--text2); }
+.small { font-size: 12px; color: var(--text3); }
+.stats { display: flex; gap: 32px; flex-wrap: wrap; margin: 20px 0; }
+.stat .v { font-size: 24px; font-weight: 600; }
+.stat .l { font-size: 12px; color: var(--text2); }
+.warn {
+  background: var(--warn-bg);
+  border: 1px solid var(--warn-line);
+  border-radius: 6px;
+  padding: 12px 14px;
+  margin: 16px 0;
+}
+.warn strong { display: block; margin-bottom: 4px; }
+.pills { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0; }
+.pill {
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--text);
+  border-radius: 999px;
+  padding: 4px 12px;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.pill.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+.pill.small-pill { padding: 2px 10px; font-size: 12px; }
+.dot { width: 8px; height: 8px; border-radius: 2px; display: inline-block; }
+.chart { overflow-x: auto; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); }
+.chart svg { display: block; font-size: 11px; }
+.t-pri { fill: var(--text); }
+.t-sec { fill: var(--text2); }
+.t-ter { fill: var(--text3); }
+.rule { stroke: var(--line); }
+.lbl { fill: var(--text); stroke: var(--bg); stroke-width: 3px; paint-order: stroke; }
+.node-neutral { fill: var(--node); stroke: var(--node); }
+.node-dashed { fill: var(--node-fill); stroke: var(--text3); stroke-dasharray: 3 2; }
+.node-sel { stroke: var(--accent) !important; stroke-width: 2px !important; }
+g.node { cursor: pointer; }
+.section { margin-top: 28px; }
+.tablewrap {
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  max-height: 560px;
+}
+table { border-collapse: collapse; width: 100%; font-size: 12.5px; }
+th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { color: var(--text2); font-weight: 600; position: sticky; top: 0; background: var(--panel); white-space: nowrap; }
+tbody tr:nth-child(even) td { background: var(--panel); }
+code { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; }
+.row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+hr { border: 0; border-top: 1px solid var(--line); margin: 28px 0; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Coletas do data lake: da origem ao consumidor</h1>
+    <p class="muted">
+      Fluxo de cada coleta e transformação mapeada: sistema de origem, tecnologia onde o dado está persistido, conector, camadas do lake (landing, raw, staged, curated), camada analítica e consumidores. A largura de cada faixa é o número de fluxos de coleta.
+    </p>
+  </header>
+
+  <section class="warn">
+    <strong>Limites desta versão</strong>
+    O Data Asker e o catálogo de dados não estavam acessíveis no ambiente de geração (o MCP Inter-trino falhou ao iniciar e o Data Asker só aparece no Second Brain como sistema externo). Tudo aqui vem do Second Brain, que responde por busca. Por isso a lista não é exaustiva e os consumidores são poucos. Nós tracejados marcam lacunas que o catálogo deve preencher.
+  </section>
+
+  <div class="stats" id="stats"></div>
+
+  <section>
+    <h3>Domínios de dados</h3>
+    <div class="small" style="margin-bottom:6px">Clique para filtrar. Pode marcar vários.</div>
+    <div class="pills" id="pills"></div>
+    <div class="small">Passe o mouse sobre um nó para destacar as coletas que passam por ele. Clique para fixar e ver o detalhe na tabela abaixo.</div>
+  </section>
+
+  <section class="chart" style="margin-top:14px"><div id="chart"></div></section>
+
+  <p class="small">
+    Lake BR = buckets ilake/dlake. Lake US = buckets dlhus (inferido pelo caminho do repositório quando não explícito). Fontes: Second Brain (ADLC), análise de 13/11/2026. Cada fluxo tem confiança na tabela abaixo.
+  </p>
+
+  <hr>
+
+  <section class="section">
+    <div class="row" style="margin-bottom:8px">
+      <h2 id="tblTitle"></h2>
+    </div>
+    <div class="tablewrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Coleta</th><th>Domínio</th><th>Origem</th><th>Tecnologia</th><th>Conector</th><th>Camadas</th><th>Curated</th><th>Analytics</th><th>Consumidor</th><th>Confiança</th><th>Observações</th>
+          </tr>
+        </thead>
+        <tbody id="tbody"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="section">
+    <h3>Consumidores do lake achados sem vínculo com uma coleta específica</h3>
+    <div class="tablewrap" style="max-height:none">
+      <table>
+        <thead><tr><th>Consumidor</th><th>O que lê</th><th>Como</th></tr></thead>
+        <tbody>
+          <tr><td><code>inv-trino-carga</code></td><td>schema investimentos_analytics (catálogo glue)</td><td>Trino JDBC, somente leitura</td></tr>
+          <tr><td><code>inv-vessel-trade-management</code></td><td>tabelas analíticas de trades</td><td>Trino JDBC</td></tr>
+          <tr><td><code>lgpd-integracoes-handler</code></td><td>catálogo Trino curated</td><td>Somente leitura</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="small">
+      Ficaram de fora por serem templates ou sem detalhe suficiente: coleta-interdup, card-analytics-pdd e load-unload-ingestions (templates), e relatórios como report-pl-adp, report-pl-capital-giro-dois, report-cedro, report_greenhouse e report-custo-global-funding. O report-table-usage grava o último acesso de leitura e escrita por tabela, e pode ser a melhor fonte para descobrir consumidores reais.
+    </p>
+  </section>
+</main>
+
+<script>
+"use strict";
+
+const DOMAINS = [
+  "Investimentos (BR)",
+  "Crédito e Risco (BR)",
+  "Cross Border e LatAm",
+  "US · Banking e Plataforma",
+  "US · Loans",
+  "US · Remessas, Cartões e Investimentos",
+  "Seguros, Jurídico e Pessoas",
+  "Tecnologia e Governança",
+  "Cliente e Marketplace",
+];
+const DOM_COLORS = ["#2563eb", "#ea580c", "#9333ea", "#059669", "#dc2626", "#ca8a04", "#0891b2", "#db2777", "#475569"];
+
+const COLS = [
+  "Sistema de origem",
+  "Tecnologia da origem",
+  "Conector",
+  "Landing Zone",
+  "Raw",
+  "Staged (SCD)",
+  "Curated (database)",
+  "Pré-analytics / Analytics",
+  "Consumidores",
+];
+
+const LAYER_LABEL = { LZ: "Landing", RAW: "Raw", STG: "Staged" };
+const LAYER_COL = { LZ: 3, RAW: 4, STG: 5 };
+
+const T_PG = "PostgreSQL";
+const T_MSSQL = "SQL Server";
+const T_ORA = "Oracle";
+const T_MONGO = "MongoDB";
+const T_DDB = "DynamoDB";
+const T_FILES = "Arquivos (SFTP / S3)";
+const T_API = "API SaaS (REST)";
+const T_SAP = "SAP";
+const T_LAKE = "Data Lake (Glue/Delta)";
+const T_NI = "Não identificada";
+
+const C_KAFKA = "Kafka CDC";
+const C_JDBC = "JDBC (SQL/procedures)";
+const C_SFTP = "SFTP (arquivos)";
+const C_S3 = "Arquivos em S3";
+const C_API = "API REST / HTTPS";
+const C_SPARK = "Spark/DEDE sobre Glue";
+const C_NI = "Não identificado";
+
+const CUR_NI = "Curated · db não identificado";
+const CUR_INV = "investimentos_curated";
+const CUR_INV2 = "curated_invest";
+const CUR_CRED = "credito_curated";
+const CUR_XB = "cross_border_curated";
+const CUR_USB = "us_affil_banking_curated";
+const CUR_USC = "us_affil_credit_curated";
+const CUR_INT = "customer_relations_curated";
+
+const K_TRINO = "Trino (outros times)";
+const K_REDSHIFT = "Redshift investimentos (BI)";
+const K_DUXUS = "Duxus (parceiro externo)";
+const K_ALM = "Relatório ALM (interno)";
+const K_HUB = "Publicação online (Inter Hub)";
+const K_NONE = "Consumidor não mapeado";
+
+const FULL_LABEL = {
+  [CUR_USB]: "us_affiliates_banking_curated",
+  [CUR_USC]: "us_affiliates_credit_curated",
+  [K_TRINO]: "Trino: consulta por outros times (catálogo curated)",
+  [K_REDSHIFT]: "Redshift, schema investimentos (consumo analítico/BI)",
+  [K_ALM]: "Consumidores internos do relatório ALM (riscos_analytics)",
+  [K_HUB]: "Publicação online dos rankings (menu hiperpersonalizado do Inter Hub)",
+  [CUR_NI]: "Database curated não identificado nas fontes consultadas",
+};
+
+const FLOWS = [
+  { id: "f1", proj: "coleta-combos", name: "coleta-combos", dom: 0, src: "Combos · carteira_sugerida", tech: T_PG, conn: C_KAFKA, lake: "BR", layers: ["LZ", "RAW", "STG"], cur: CUR_INV, cons: [K_TRINO], conf: "Alta", note: "9 tabelas via CDC; SCD no staged" },
+  { id: "f2", proj: "coleta-renda-fixa-primaria-ax", name: "coleta-renda-fixa-primaria-ax", dom: 0, src: "AX · Renda Fixa Primária", tech: T_PG, conn: C_JDBC, lake: "BR", layers: ["LZ", "RAW", "STG"], cur: CUR_NI, cons: [K_NONE], conf: "Alta", note: "Funções do schema rf (AB_APLICAUT_RF)" },
+  { id: "f3", proj: "coleta-aplic-aut-ax-posicao-calc-risco", name: "coleta-aplic-aut-ax-posicao-calc-risco", dom: 0, src: "AX · Aplicação Automática", tech: T_MSSQL, conn: C_JDBC, lake: "BR", layers: [], cur: CUR_NI, cons: [K_NONE], conf: "Baixa", note: "Procedure dbo.p_posicao_calc_risco; camadas e tecnologia inferidas" },
+  { id: "f4", proj: "coleta-cadastro-investimento", name: "coleta-cadastro-investimento", dom: 0, src: "AX · Cadastro RF (AB_RENFIX)", tech: T_MSSQL, conn: C_JDBC, lake: "BR", layers: ["RAW"], cur: CUR_INV2, ana: "preanalytics · dim_cliente", cons: [K_NONE], conf: "Alta", note: "Stored procedures; Data Quality com PyDeequ" },
+  { id: "f5", proj: "coleta-change-cambio", name: "coleta-change-cambio", dom: 0, src: "Change · CHANGE.dbo.DB05", tech: T_MSSQL, conn: C_JDBC, lake: "BR", layers: ["RAW"], cur: CUR_INV2, cons: [K_NONE], conf: "Média", note: "Conector e camadas intermediárias inferidos" },
+  { id: "f6", proj: "coleta-bolsa-sinacor", name: "coleta-bolsa-sinacor", dom: 0, src: "Sinacor (bolsa e tesouro)", tech: T_ORA, conn: C_JDBC, lake: "BR", layers: ["RAW"], cons: [], conf: "Média", note: "Ingestão até a Raw; conector inferido" },
+  { id: "f7", proj: "coleta-alteryx-investimentos", name: "coleta-alteryx-investimentos", dom: 0, src: "Alteryx · captação líquida", tech: T_FILES, conn: C_S3, lake: "BR", layers: ["LZ"], cur: CUR_INV, cons: [K_NONE], conf: "Média", note: "CSV copiado da landing-zone" },
+  { id: "f8", proj: "coleta-risco-produto", name: "coleta-risco-produto", dom: 0, src: "Risco de produto (fundos, ofertas, RF)", tech: T_PG, conn: C_JDBC, lake: "BR", layers: [], cur: CUR_INV2, cons: [K_NONE], conf: "Média", note: "Camadas intermediárias e conector inferidos" },
+  { id: "f9", proj: "report-previdencia-icatu", name: "report-previdencia-icatu", dom: 0, src: "Curated Icatu (CADA, movimentação)", tech: T_LAKE, conn: C_SPARK, lake: "BR", layers: [], ana: "analytics_invest · OBT previdência", cons: [K_REDSHIFT], conf: "Alta", note: "Lê curated, gera OBT e carrega no Redshift" },
+
+  { id: "f10", proj: "coleta-sworks", name: "coleta-sworks (CDC)", dom: 1, src: "SWORKS (consignado)", tech: T_MSSQL, conn: C_KAFKA, lake: "BR", layers: ["LZ", "RAW", "STG"], cur: CUR_CRED, cons: [K_TRINO], conf: "Alta", note: "Horário; contrato consumido por outros times" },
+  { id: "f11", proj: "coleta-sworks", name: "coleta-sworks (JDBC full load)", dom: 1, src: "SWORKS (consignado)", tech: T_MSSQL, conn: C_JDBC, lake: "BR", layers: ["LZ", "RAW"], cur: CUR_CRED, cons: [K_TRINO], conf: "Alta", note: "Carga completa por tabela" },
+  { id: "f12", proj: "report-capital-giro-3", name: "report-capital-giro-3", dom: 1, src: "Curated crédito, riscos e Infobanc", tech: T_LAKE, conn: C_SPARK, lake: "BR", layers: [], ana: "riscos_analytics", cons: [K_DUXUS, K_ALM], conf: "Alta", note: "Relatório ALM; CSV KGIRO3 entregue à Duxus via S3" },
+
+  { id: "f13", proj: "coleta-cross-border-credit-card", name: "coleta-cross-border-credit-card", dom: 2, src: "I2C · processadora de cartões", tech: T_FILES, conn: C_SFTP, lake: "BR", layers: ["LZ", "RAW"], cur: CUR_XB, cons: [K_TRINO], conf: "Alta", note: "POSTED, AUTH, NONFIN e PROMO com PGP" },
+  { id: "f14", proj: "coleta-cross-border-debit-card", name: "coleta-cross-border-debit-card", dom: 2, src: "I2C · processadora de cartões", tech: T_FILES, conn: C_SFTP, lake: "BR", layers: ["LZ", "RAW"], cur: CUR_XB, cons: [K_NONE], conf: "Média", note: "Database curated inferido" },
+  { id: "f15", proj: "coleta-cross-border-i2c-credit-collection", name: "coleta-cross-border-i2c-credit-collection", dom: 2, src: "I2C · processadora de cartões", tech: T_FILES, conn: C_SFTP, lake: "BR", layers: ["LZ", "RAW"], cur: CUR_XB, cons: [K_NONE], conf: "Média", note: "CSV de inadimplência; database curated inferido" },
+  { id: "f16", proj: "coleta-cross-border-credit-card-historico", name: "coleta-cross-border-credit-card-historico", dom: 2, src: "I2C · processadora de cartões", tech: T_FILES, conn: C_SFTP, lake: "BR", layers: [], cur: CUR_XB, cons: [K_NONE], conf: "Baixa", note: "Reprocessamento histórico; camadas inferidas" },
+  { id: "f17", proj: "coleta-cross-border-embossadora-idemia", name: "coleta-cross-border-embossadora-idemia", dom: 2, src: "IDEMIA · embossadora", tech: T_FILES, conn: C_S3, lake: "BR", layers: ["LZ", "RAW"], cur: CUR_XB, cons: [K_NONE], conf: "Média", note: "CSV na landing; database curated inferido" },
+  { id: "f18", proj: "onboarding-ingestions", name: "onboarding-ingestions", dom: 2, src: "Onboarding conta internacional", tech: T_MONGO, conn: C_KAFKA, lake: "BR", layers: ["LZ", "RAW", "STG"], cur: CUR_NI, cons: [K_NONE], conf: "Média", note: "Lake inferido pelo caminho do repositório" },
+  { id: "f19", proj: "report-crm-global-account", name: "report-crm-global-account", dom: 2, src: "Curated Usend e Wallet (CRM)", tech: T_LAKE, conn: C_SPARK, lake: "BR", layers: [], ana: "cross_border_analytics", cons: [K_NONE], conf: "Alta", note: "Bases pré-analíticas e tabela tbl_crm_orders" },
+  { id: "f20", proj: "collect-sydle-onboarding", name: "collect_sydle_onboarding", dom: 2, src: "Sydle · onboarding PF Argentina", tech: T_API, conn: C_API, lake: "BR", layers: [], cur: CUR_NI, cons: [K_NONE], conf: "Baixa", note: "Camadas inferidas" },
+
+  { id: "f21", proj: "payments_engine_ingestion", name: "payments_engine_ingestion", dom: 3, src: "Payments Engine (DynamoDB)", tech: T_DDB, conn: C_KAFKA, lake: "US", layers: ["LZ", "RAW", "STG"], cur: CUR_USB, cons: [K_NONE], conf: "Alta", note: "Diário às 04:00; 4 entidades curadas" },
+  { id: "f22", proj: "us-digital-account-ingestions", name: "us-digital-account-ingestions", dom: 3, src: "Conta Digital Intl · usenddb", tech: T_MSSQL, conn: C_KAFKA, lake: "US", layers: ["LZ", "RAW", "STG"], cur: CUR_USB, cons: [K_NONE], conf: "Média", note: "Database curated inferido" },
+  { id: "f23", proj: "onboarding-inter-business-ingestions", name: "onboarding-inter-business-ingestions", dom: 3, src: "Onboarding Inter Business", tech: T_MONGO, conn: C_KAFKA, lake: "US", layers: ["LZ", "RAW", "STG"], cur: CUR_USB, cons: [K_NONE], conf: "Alta", note: "Collections do BUSINESS-DATA" },
+  { id: "f24", proj: "onboarding-gsp-ingestions", name: "onboarding-gsp-ingestions", dom: 3, src: "Global Signup Platform · onboarding", tech: T_NI, conn: C_NI, lake: "US", layers: ["LZ", "RAW", "STG"], cur: CUR_NI, cons: [K_NONE], conf: "Baixa", note: "Origem e conector não detalhados" },
+
+  { id: "f25", proj: "mortgage-ingestions", name: "mortgage-ingestions", dom: 4, src: "Mortgage · rec_finance", tech: T_PG, conn: C_KAFKA, lake: "US", layers: ["LZ", "RAW", "STG"], cur: CUR_USC, cons: [K_NONE], conf: "Alta", note: "7 tabelas, incluindo auditorias" },
+
+  { id: "f26", proj: "cnr-payments-engine-ingestions", name: "cnr-payments-engine-ingestions", dom: 5, src: "CNR Core · client e operation", tech: T_MONGO, conn: C_KAFKA, lake: "US", layers: ["LZ", "RAW", "STG"], cur: CUR_USB, cons: [K_TRINO], conf: "Alta", note: "Curated exposto como produto de dados" },
+  { id: "f27", proj: "coleta-i2c-credit-card-us", name: "coleta-i2c-credit-card-us", dom: 5, src: "I2C · cartão global US", tech: T_FILES, conn: C_SFTP, lake: "US", layers: ["LZ", "RAW"], cur: CUR_NI, cons: [K_NONE], conf: "Média", note: "PGP descriptografado na landing" },
+  { id: "f28", proj: "coleta-drivewealth", name: "coleta-drivewealth", dom: 5, src: "DriveWealth · CSV", tech: T_FILES, conn: C_SFTP, lake: "US", layers: ["LZ"], cur: CUR_NI, cons: [K_NONE], conf: "Média", note: "Dois fluxos; camadas intermediárias inferidas" },
+
+  { id: "f29", proj: "insurance-sap-integration-ingestions", name: "insurance-sap-integration-ingestions", dom: 6, src: "SAP · ERP corporativo (Seguros)", tech: T_SAP, conn: C_NI, lake: "BR", layers: ["RAW", "STG"], cur: CUR_NI, cons: [K_NONE], conf: "Média", note: "EMR efêmero; conector não detalhado" },
+  { id: "f30", proj: "coleta-benner", name: "coleta-benner", dom: 6, src: "Benner · Consultas (datasources)", tech: T_API, conn: C_API, lake: "BR", layers: [], cur: CUR_NI, cons: [K_NONE], conf: "Baixa", note: "Diário à 01:00; camadas inferidas" },
+  { id: "f31", proj: "people-culture-coleta-api-ahgora", name: "people-culture-coleta-api-ahgora", dom: 6, src: "Ahgora · ponto e afastamentos", tech: T_API, conn: C_API, lake: "BR", layers: ["LZ", "RAW"], cur: CUR_NI, cons: [K_NONE], conf: "Alta", note: "employees, punches e leaves" },
+
+  { id: "f32", proj: "coleta-aws-cloudtrail-iac-logs", name: "coleta-aws-cloudtrail-iac-logs", dom: 7, src: "AWS CloudTrail · 21 contas", tech: T_FILES, conn: C_S3, lake: "BR", layers: [], cur: CUR_NI, cons: [K_NONE], conf: "Baixa", note: "json.gz no S3; camadas inferidas" },
+  { id: "f33", proj: "report-table-usage", name: "report-table-usage", dom: 7, src: "Glue Catalog + S3 access logs", tech: T_LAKE, conn: C_SPARK, lake: "BR", layers: [], ana: "report_table_usage", cons: [K_NONE], conf: "Média", note: "Último acesso de leitura e escrita por tabela" },
+
+  { id: "f34", proj: "data-co-intercom", name: "data-co-intercom", dom: 8, src: "Intercom · Activity Logs", tech: T_API, conn: C_API, lake: "BR", layers: ["RAW"], cur: CUR_INT, cons: [K_NONE], conf: "Alta", note: "A cada 20 minutos; raw Parquet e curated Delta" },
+  { id: "f35", proj: "loop-history-balance", name: "loop-history-balance", dom: 8, src: "Curated marketplace, d2d e expurgo", tech: T_LAKE, conn: C_SPARK, lake: "BR", layers: [], ana: "marketplace_analytics", cons: [K_NONE], conf: "Alta", note: "Saldo diário e histórico de pontos" },
+  { id: "f36", proj: "inter-hub-menu-hyper-personalization", name: "inter-hub-menu-hyper-personalization", dom: 8, src: "Tabelas analíticas marketplace (ML)", tech: T_LAKE, conn: C_SPARK, lake: "BR", layers: [], ana: "marketplace_analytics", cons: [K_HUB], conf: "Média", note: "Job de publicação online; consumidor inferido" },
+  { id: "f37", proj: "inter-hub-quick-menu-hyperpersonalization", name: "inter-hub-quick-menu-hyperpersonalization", dom: 8, src: "Tabelas analíticas marketplace (ML)", tech: T_LAKE, conn: C_SPARK, lake: "BR", layers: [], ana: "marketplace_analytics", cons: [K_HUB], conf: "Média", note: "features_data, item_ranking; consumidor inferido" },
+];
+
+const W = 1640;
+const NW = 14;
+const GUTTER = 262;
+const RIGHT = 210;
+const KY = 15;
+const PAD = 5;
+const GROUP_GAP = 30;
+const TOP = 52;
+const XS = COLS.map((_, i) => GUTTER + (i * (W - GUTTER - RIGHT - NW)) / (COLS.length - 1));
+
+function layoutSankey(flows) {
+  const nodes = new Map();
+  const links = new Map();
+  let counter = 0;
+
+  const getNode = (key, label, col, dom) => {
+    let n = nodes.get(key);
+    if (!n) {
+      n = {
+        key,
+        label,
+        full: FULL_LABEL[label] || label,
+        col,
+        dom,
+        order: counter++,
+        flows: new Set(),
+        inW: 0,
+        outW: 0,
+        y: 0,
+        h: 0,
+        dashed: label === K_NONE || label === CUR_NI,
+        ins: [],
+        outs: [],
+      };
+      nodes.set(key, n);
+    }
+    return n;
+  };
+
+  const addLink = (s, t, w, f) => {
+    const key = s.key + ">" + t.key + ">" + f.dom;
+    let l = links.get(key);
+    if (!l) {
+      l = { s, t, dom: f.dom, w: 0, flows: [], sy: 0, ty: 0 };
+      links.set(key, l);
+      s.outs.push(l);
+      t.ins.push(l);
+    }
+    l.w += w;
+    l.flows.push(f.id);
+    s.outW += w;
+    t.inW += w;
+  };
+
+  for (const f of flows) {
+    const path = [];
+    path.push(getNode("0|" + f.dom + "|" + f.src, f.src, 0, f.dom));
+    path.push(getNode("1|" + f.tech, f.tech, 1, -1));
+    path.push(getNode("2|" + f.conn, f.conn, 2, -1));
+    ["LZ", "RAW", "STG"].forEach((layer) => {
+      if (f.layers.includes(layer)) {
+        path.push(getNode(LAYER_COL[layer] + "|" + layer + "|" + f.lake, LAYER_LABEL[layer] + " · " + f.lake, LAYER_COL[layer], -1));
+      }
+    });
+    if (f.cur) path.push(getNode("6|" + f.cur, f.cur, 6, -1));
+    if (f.ana) path.push(getNode("7|" + f.ana, f.ana, 7, -1));
+    path.forEach((n) => n.flows.add(f.id));
+    for (let i = 0; i < path.length - 1; i++) addLink(path[i], path[i + 1], 1, f);
+    const cons = f.cons || [];
+    for (const c of cons) {
+      const cn = getNode("8|" + c, c, 8, -1);
+      cn.flows.add(f.id);
+      addLink(path[path.length - 1], cn, 1 / cons.length, f);
+    }
+  }
+
+  const all = Array.from(nodes.values());
+  all.forEach((n) => {
+    n.h = Math.max(Math.max(n.inW, n.outW) * KY, 6);
+  });
+
+  const cols = COLS.map((_, c) => all.filter((n) => n.col === c));
+  cols[0].sort((a, b) => a.dom - b.dom || a.order - b.order);
+  for (let c = 1; c < cols.length; c++) cols[c].sort((a, b) => a.order - b.order);
+
+  const groups = [];
+  let y = TOP + 22;
+  cols[0].forEach((n, i) => {
+    if (i > 0) y += cols[0][i - 1].h + (n.dom !== cols[0][i - 1].dom ? GROUP_GAP : PAD);
+    n.y = y;
+    if (i === 0 || n.dom !== cols[0][i - 1].dom) groups.push({ dom: n.dom, y });
+  });
+  const last0 = cols[0][cols[0].length - 1];
+  const height = Math.max(last0.y + last0.h + 28, 480);
+  const availTop = TOP + 22;
+  const availBottom = height - 28;
+
+  const place = (c) => {
+    const list = cols[c];
+    if (list.length === 0) return;
+    const sum = list.reduce((a, n) => a + n.h, 0);
+    const gap = list.length > 1 ? Math.min(44, Math.max(PAD, (availBottom - availTop - sum) / (list.length - 1))) : 0;
+    const total = sum + gap * (list.length - 1);
+    let yy = availTop + (availBottom - availTop - total) / 2;
+    for (const n of list) {
+      n.y = yy;
+      yy += n.h + gap;
+    }
+  };
+
+  const bary = (n, dir) => {
+    const ls = dir === "in" ? n.ins : n.outs;
+    if (ls.length === 0) return n.y + n.h / 2;
+    let sw = 0;
+    let s = 0;
+    for (const l of ls) {
+      const o = dir === "in" ? l.s : l.t;
+      s += (o.y + o.h / 2) * l.w;
+      sw += l.w;
+    }
+    return s / sw;
+  };
+
+  const sortCol = (c, dir) => {
+    const keyed = cols[c].map((n) => ({ n, k: bary(n, dir) }));
+    keyed.sort((a, b) => a.k - b.k);
+    cols[c] = keyed.map((x) => x.n);
+    place(c);
+  };
+
+  for (let c = 1; c < cols.length; c++) place(c);
+  for (let it = 0; it < 4; it++) {
+    for (let c = 1; c < cols.length; c++) sortCol(c, "in");
+    for (let c = cols.length - 2; c >= 1; c--) sortCol(c, "out");
+  }
+  for (let c = 1; c < cols.length; c++) sortCol(c, "in");
+
+  for (const n of all) {
+    n.outs.sort((a, b) => (a.t.y + a.t.h / 2) - (b.t.y + b.t.h / 2) || a.dom - b.dom);
+    let o = 0;
+    for (const l of n.outs) {
+      l.sy = n.y + o;
+      o += l.w * KY;
+    }
+    n.ins.sort((a, b) => (a.s.y + a.s.h / 2) - (b.s.y + b.s.h / 2) || a.dom - b.dom);
+    o = 0;
+    for (const l of n.ins) {
+      l.ty = n.y + o;
+      o += l.w * KY;
+    }
+  }
+
+  return {
+    nodes: all,
+    links: Array.from(links.values()),
+    height,
+    groups,
+    byKey: new Map(all.map((n) => [n.key, n])),
+  };
+}
+
+function esc(s) {
+  return String(s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function clip(s, max) {
+  return s.length > max ? s.slice(0, max - 1) + "…" : s;
+}
+
+function layersText(f) {
+  const parts = [];
+  if (f.tech === T_LAKE) parts.push("Curated (leitura)");
+  f.layers.forEach((l) => parts.push(LAYER_LABEL[l]));
+  if (f.cur) parts.push(f.layers.length === 0 ? "Curated (intermediárias n/d)" : "Curated");
+  if (f.ana) parts.push("Analytics");
+  return parts.join(" → ") || "-";
+}
+
+const state = { active: new Set(), hover: null, selected: null };
+let L = null;
+let visibleFlows = FLOWS;
+
+const svgHost = document.getElementById("chart");
+
+function renderStats() {
+  const projects = new Set(FLOWS.map((f) => f.proj)).size;
+  const connectors = new Set(FLOWS.filter((f) => f.conn !== C_NI && f.conn !== C_SPARK).map((f) => f.conn)).size;
+  const withConsumer = FLOWS.filter((f) => f.cons && f.cons.some((c) => c !== K_NONE)).length;
+  const withCurated = FLOWS.filter((f) => f.cur !== CUR_NI && (f.cur || f.ana)).length;
+  const items = [
+    [FLOWS.length, "fluxos mapeados em " + projects + " projetos"],
+    [DOMAINS.length, "domínios de dados"],
+    [connectors, "tipos de conector identificados"],
+    [withCurated + " de " + FLOWS.length, "com database de destino identificado"],
+    [withConsumer + " de " + FLOWS.length, "com consumidor identificado"],
+  ];
+  document.getElementById("stats").innerHTML = items
+    .map(([v, l]) => `<div class="stat"><div class="v">${esc(v)}</div><div class="l">${esc(l)}</div></div>`)
+    .join("");
+}
+
+function renderPills() {
+  const allActive = state.active.size === 0;
+  let html = `<button class="pill${allActive ? " active" : ""}" data-all="1">Todos</button>`;
+  DOMAINS.forEach((d, i) => {
+    const on = state.active.has(i);
+    html += `<button class="pill${on ? " active" : ""}" data-dom="${i}"><span class="dot" style="background:${DOM_COLORS[i]}"></span>${esc(d)}</button>`;
+  });
+  document.getElementById("pills").innerHTML = html;
+}
+
+function renderSvg() {
+  const H = L.height;
+  let s = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">`;
+  COLS.forEach((c, i) => {
+    const x = i === 0 ? XS[i] + NW : XS[i];
+    s += `<text x="${x}" y="24" text-anchor="${i === 0 ? "end" : "start"}" class="t-sec" style="font-weight:600">${esc(c)}</text>`;
+  });
+  s += `<line x1="12" x2="${W - 12}" y1="36" y2="36" class="rule"/>`;
+  L.groups.forEach((g) => {
+    s += `<text x="12" y="${g.y - 10}" fill="${DOM_COLORS[g.dom]}" style="font-weight:600">${esc(DOMAINS[g.dom])}</text>`;
+  });
+
+  s += `<g class="links">`;
+  L.links.forEach((l) => {
+    const x0 = XS[l.s.col] + NW;
+    const x1 = XS[l.t.col];
+    const w = l.w * KY;
+    const y0 = l.sy + w / 2;
+    const y1 = l.ty + w / 2;
+    const xm = (x0 + x1) / 2;
+    const names = l.flows.map((id) => (FLOWS.find((f) => f.id === id) || { name: id }).name).join(", ");
+    const title = DOMAINS[l.dom] + ": " + l.s.label + " → " + l.t.label + "\n" + names;
+    s += `<path d="M${x0},${y0} C${xm},${y0} ${xm},${y1} ${x1},${y1}" fill="none" stroke="${DOM_COLORS[l.dom]}" stroke-width="${w}" stroke-opacity="0.42" data-flows="${esc(l.flows.join(" "))}"><title>${esc(title)}</title></path>`;
+  });
+  s += `</g><g class="nodes">`;
+
+  L.nodes.forEach((n) => {
+    const isSel = state.selected === n.key;
+    const isDomNode = n.col === 0;
+    const rectClass = [n.dashed ? "node-dashed" : "node-neutral", isSel ? "node-sel" : ""].filter(Boolean).join(" ");
+    const rectFill = !n.dashed && isDomNode ? ` fill="${DOM_COLORS[n.dom]}" stroke="${DOM_COLORS[n.dom]}"` : "";
+    const labelLeft = n.col === 0;
+    const labelRight = n.col === COLS.length - 1;
+    const max = n.col === 0 ? 44 : labelRight ? 30 : 25;
+    const tx = labelLeft ? XS[n.col] - 7 : XS[n.col] + NW + 6;
+    const ty = n.y + n.h / 2 + 4;
+    s += `<g class="node" data-key="${esc(n.key)}">`;
+    s += `<rect x="${XS[n.col]}" y="${n.y}" width="${NW}" height="${n.h}" rx="2" class="${rectClass}"${rectFill}/>`;
+    s += `<text x="${tx}" y="${ty}" text-anchor="${labelLeft ? "end" : "start"}" class="lbl">${esc(clip(n.label, max))}</text>`;
+    s += `<title>${esc(n.full + " (" + n.flows.size + " fluxos)")}</title>`;
+    s += `</g>`;
+  });
+  s += `</g></svg>`;
+  svgHost.innerHTML = s;
+}
+
+function applyFocus() {
+  const key = state.hover || state.selected;
+  const node = key ? L.byKey.get(key) : null;
+  const ff = node ? node.flows : null;
+  svgHost.querySelectorAll("g.node").forEach((g) => {
+    const n = L.byKey.get(g.dataset.key);
+    const dim = ff ? ![...n.flows].some((id) => ff.has(id)) : false;
+    g.style.opacity = dim ? "0.25" : "1";
+  });
+  svgHost.querySelectorAll("g.links path").forEach((p) => {
+    if (!ff) {
+      p.style.strokeOpacity = "0.42";
+      return;
+    }
+    const on = p.dataset.flows.split(" ").some((id) => ff.has(id));
+    p.style.strokeOpacity = on ? "0.75" : "0.06";
+  });
+}
+
+function renderTable() {
+  const sel = state.selected ? L.byKey.get(state.selected) : null;
+  const rows = sel ? visibleFlows.filter((f) => sel.flows.has(f.id)) : visibleFlows;
+  document.getElementById("tblTitle").innerHTML = sel
+    ? `Fluxos que passam por: ${esc(sel.full)} <button class="pill small-pill" data-clear="1">Limpar seleção</button>`
+    : "Todos os fluxos mapeados";
+  document.getElementById("tbody").innerHTML = rows
+    .map((f) => {
+      const cur = f.cur ? FULL_LABEL[f.cur] || f.cur : "-";
+      const cons = (f.cons || []).map((c) => FULL_LABEL[c] || c).join(" e ") || "-";
+      return `<tr>
+        <td><code>${esc(f.name)}</code></td>
+        <td>${esc(DOMAINS[f.dom])}</td>
+        <td>${esc(f.src)}</td>
+        <td>${esc(f.tech)}</td>
+        <td>${esc(f.conn)}</td>
+        <td>${esc(layersText(f))}</td>
+        <td>${esc(cur)}</td>
+        <td>${esc(f.ana || "-")}</td>
+        <td>${esc(cons)}</td>
+        <td>${esc(f.conf)}</td>
+        <td>${esc(f.note)}</td>
+      </tr>`;
+    })
+    .join("");
+}
+
+function build() {
+  visibleFlows = state.active.size === 0 ? FLOWS : FLOWS.filter((f) => state.active.has(f.dom));
+  L = layoutSankey(visibleFlows);
+  renderPills();
+  renderSvg();
+  renderTable();
+  applyFocus();
+}
+
+function resetInteraction() {
+  state.selected = null;
+  state.hover = null;
+}
+
+document.getElementById("pills").addEventListener("click", (e) => {
+  const btn = e.target.closest("button");
+  if (!btn) return;
+  resetInteraction();
+  if (btn.dataset.all) {
+    state.active.clear();
+  } else {
+    const d = Number(btn.dataset.dom);
+    if (state.active.has(d)) state.active.delete(d);
+    else state.active.add(d);
+  }
+  build();
+});
+
+document.getElementById("tblTitle").addEventListener("click", (e) => {
+  if (e.target.closest("[data-clear]")) {
+    state.selected = null;
+    build();
+  }
+});
+
+svgHost.addEventListener("mouseover", (e) => {
+  const g = e.target.closest("g.node");
+  const k = g ? g.dataset.key : null;
+  if (k !== state.hover) {
+    state.hover = k;
+    applyFocus();
+  }
+});
+
+svgHost.addEventListener("mouseleave", () => {
+  state.hover = null;
+  applyFocus();
+});
+
+svgHost.addEventListener("click", (e) => {
+  const g = e.target.closest("g.node");
+  if (!g) return;
+  const k = g.dataset.key;
+  state.selected = state.selected === k ? null : k;
+  renderSvg();
+  renderTable();
+  applyFocus();
+});
+
+renderStats();
+build();
+</script>
+</body>
+</html>
